@@ -1,0 +1,44 @@
+version: "2.0"
+
+merger:
+  matching_window_ticks: 120
+  pitch_tolerance: 4
+  velocity_boost: 1.2
+  velocity_min: 30
+  quantize_division: 16
+  humanize_max_ticks: 20
+  scoring_pitch_weight: 50
+
+pitch_bend:
+  smoothing_algorithm: "savgol"
+  window_size: 5
+  polynomial_order: 2
+  redundancy_threshold: 100
+  time_gap_threshold: 48
+
+quality:
+  min_overall_score: 0.70
+  min_match_rate: 0.50
+  min_velocity_range: 40
+  max_stuck_notes: 0
+  max_pitch_bend_jump: 1000
+  max_retries: 3
+
+tracks:
+  solo_guitar:
+    pattern: "Solo.*Guitar"
+    low_cutoff: 48
+    velocity_range: [80, 100]
+  rhythm_guitar:
+    pattern: "Rhythm.*Guitar|Rhytm.*Guitar"
+    velocity_range: [70, 90]
+  steel_guitar:
+    pattern: "Steel.*Guitar"
+    velocity_range: [65, 90]
+  bass:
+    pattern: "Electric.*Bass|Darkwall"
+    velocity_range: [70, 90]
+
+logging:
+  level: INFO
+  directory: /data/logs

@@ -1,0 +1,58 @@
+version: "2.0"
+
+# Shreddage 3.5 Hydra / Darkwall specific presets
+# Keyswitches and CC mappings for Shreddage VST
+
+merger:
+  matching_window_ticks: 120
+  pitch_tolerance: 4
+  velocity_boost: 1.2
+  velocity_min: 30
+  quantize_division: 16
+  humanize_max_ticks: 20
+
+shreddage:
+  hydra:
+    # Keyswitch notes (MIDI note numbers)
+    keyswitches:
+      sustain: 24       # C0
+      palm_mute: 25     # C#0
+      staccato: 26      # D0
+      harmonics: 27     # D#0
+      tremolo: 28       # E0
+      slide_up: 29      # F0
+      slide_down: 30    # F#0
+      bend_up: 31       # G0
+      bend_down: 32     # G#0
+      vibrato: 33       # A0
+      tapping: 34       # A#0
+      legato: 35        # B0
+
+    # CC assignments
+    cc_mapping:
+      expression: 11
+      vibrato_depth: 1
+      slide_speed: 21
+      pick_position: 22
+      amp_type: 23
+
+    # Velocity layers
+    velocity_layers:
+      pp: [1, 40]
+      mp: [41, 70]
+      mf: [71, 100]
+      ff: [101, 127]
+
+  darkwall:
+    keyswitches:
+      sustain: 24
+      staccato: 25
+      muted: 26
+      slap: 27
+      hammer_on: 28
+      slide: 29
+
+    cc_mapping:
+      expression: 11
+      vibrato: 1
+      tone: 21

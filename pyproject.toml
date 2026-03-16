@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pmetal-midi"
+version = "2.0.0"
+description = "Power Metal MIDI Hybridization & Orchestration System"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [{name = "mgrigorov"}]
+
+dependencies = [
+    "mido>=1.2.10",
+    "numpy>=1.24.0",
+    "scipy>=1.11.0",
+    "librosa>=0.10.0",
+    "pyyaml>=6.0",
+    "pydantic>=2.0",
+    "click>=8.1.0",
+    "rich>=13.0",
+    "soundfile>=0.12.0",
+    "psutil>=5.9.0",
+]
+
+[project.optional-dependencies]
+mcp = [
+    "mcp>=1.0.0",
+    "fastmcp>=2.0.0",
+]
+separator = [
+    "audio-separator[cpu]>=0.17.0",
+]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.1.0",
+    "ruff>=0.1.0",
+    "mypy>=1.5.0",
+]
+
+[project.scripts]
+pmetal = "pmetal.cli:cli"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
