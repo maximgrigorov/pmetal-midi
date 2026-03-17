@@ -25,6 +25,11 @@ class PitchBendConfig(BaseModel):
     polynomial_order: int = Field(2, ge=1, le=5)
     redundancy_threshold: int = Field(100, ge=20, le=500)
     time_gap_threshold: int = Field(48, ge=12, le=240)
+    # Only keep bends that fall inside a matched note's duration (avoids "detuned" sound
+    # when expressive has many more notes and bends from wrong notes get applied).
+    only_inside_matched_notes: bool = True
+    # Clamp consecutive bend difference to this (raw pitch wheel units) to avoid huge jumps.
+    max_jump_clamp: int = Field(2500, ge=500, le=8192)
 
 
 class QualityConfig(BaseModel):

@@ -15,6 +15,10 @@ pitch_bend:
   polynomial_order: 2
   redundancy_threshold: 100
   time_gap_threshold: 48
+  # Only use bends that fall inside a matched (GP8) note — avoids detuned sound
+  only_inside_matched_notes: true
+  # Clamp consecutive bend difference (raw units) to avoid huge jumps
+  max_jump_clamp: 2500
 
 quality:
   min_overall_score: 0.70

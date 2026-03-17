@@ -1,4 +1,9 @@
-"""Quality analysis — metrics, scoring, self-correction loop, RetryStrategy, FeedbackLoop."""
+"""Quality analysis — metrics, scoring, self-correction loop, RetryStrategy, FeedbackLoop.
+
+Supports two modes:
+- "replacer" (legacy): note-replacement merge; match_rate is the key coverage metric.
+- "overlay": articulation overlay; articulation_coverage is the key coverage metric.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +12,7 @@ import logging
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import mido
 import numpy as np
@@ -19,12 +24,19 @@ from .utils import extract_notes, extract_pitch_bends
 
 logger = logging.getLogger(__name__)
 
-METRIC_WEIGHTS = {
+METRIC_WEIGHTS_REPLACER = {
     "density": 0.20,
     "pitch_bend_continuity": 0.25,
     "velocity_range": 0.25,
     "timing_consistency": 0.20,
     "match_rate": 0.10,
+}
+
+METRIC_WEIGHTS_OVERLAY = {
+    "pitch_bend_continuity": 0.30,
+    "velocity_range": 0.30,
+    "timing_consistency": 0.20,
+    "articulation_coverage": 0.20,
 }
 
 
@@ -36,9 +48,11 @@ class QualityReport:
     metrics: dict[str, float] = field(default_factory=dict)
     metric_details: dict[str, dict] = field(default_factory=dict)
     match_rate: float = 0.0
+    articulation_coverage: float = 0.0
     velocity_range: int = 0
     pitch_bend_max_jump: int = 0
     stuck_notes_count: int = 0
+    mode: str = "overlay"
     suggestions: list[str] = field(default_factory=list)
     parameter_adjustments: dict[str, Any] = field(default_factory=dict)
     analysis_timestamp: str = ""
@@ -50,7 +64,7 @@ class QualityReport:
     def to_summary(self) -> str:
         status = "PASS" if self.passed else "FAIL"
         lines = [
-            f"Quality Analysis — {status} (score {self.overall_score:.2f})",
+            f"Quality Analysis [{self.mode}] — {status} (score {self.overall_score:.2f})",
             "=" * 50,
         ]
         for metric, score in self.metrics.items():
@@ -76,9 +90,13 @@ class QualityAnalyzer:
         self,
         midi_path: Path,
         merge_stats: dict[str, Any] | None = None,
+        mode: Literal["replacer", "overlay"] | None = None,
     ) -> QualityReport:
         t0 = time.time()
-        logger.info("Quality analysis: %s", midi_path)
+
+        if mode is None:
+            mode = (merge_stats or {}).get("mode", "overlay")
+        logger.info("Quality analysis [%s]: %s", mode, midi_path)
 
         midi = mido.MidiFile(str(midi_path))
         tpb = midi.ticks_per_beat
@@ -92,45 +110,49 @@ class QualityAnalyzer:
         metrics: dict[str, float] = {}
         details: dict[str, dict] = {}
 
-        # density
-        s, d = _density_score(all_notes, tpb)
-        metrics["density"] = s
-        details["density"] = d
-        logger.info("  density: %.2f", s)
+        # ── shared metrics ──
 
-        # pitch bend continuity
         s, d = _pitch_bend_score(all_bends, self.qc.max_pitch_bend_jump)
         metrics["pitch_bend_continuity"] = s
         details["pitch_bend_continuity"] = d
         logger.info("  pitch_bend_continuity: %.2f", s)
 
-        # velocity range
         s, d = _velocity_score(all_notes, self.qc.min_velocity_range)
         metrics["velocity_range"] = s
         details["velocity_range"] = d
         logger.info("  velocity_range: %.2f", s)
 
-        # timing
         s, d = _timing_score(all_notes, tpb, self.config.merger.quantize_division)
         metrics["timing_consistency"] = s
         details["timing_consistency"] = d
         logger.info("  timing_consistency: %.2f", s)
 
-        # match rate (from merge_stats if available)
-        mr = (merge_stats or {}).get("match_rate", 1.0)
-        metrics["match_rate"] = min(1.0, mr / self.qc.min_match_rate) if self.qc.min_match_rate else 1.0
-        details["match_rate"] = {"actual": mr, "threshold": self.qc.min_match_rate}
+        # ── mode-specific metrics ──
 
-        overall = sum(metrics.get(m, 0) * w for m, w in METRIC_WEIGHTS.items())
-        hard_failures = self._hard_failures(details)
+        stats = merge_stats or {}
+        mr = stats.get("match_rate", 1.0)
+        ac = stats.get("articulation_coverage", mr)
+
+        if mode == "overlay":
+            weights = METRIC_WEIGHTS_OVERLAY
+            metrics["articulation_coverage"] = min(1.0, ac / 0.7) if ac < 0.7 else 1.0
+            details["articulation_coverage"] = {"actual": ac, "threshold": 0.7}
+        else:
+            weights = METRIC_WEIGHTS_REPLACER
+            s2, d2 = _density_score(all_notes, tpb)
+            metrics["density"] = s2
+            details["density"] = d2
+            metrics["match_rate"] = min(1.0, mr / self.qc.min_match_rate) if self.qc.min_match_rate else 1.0
+            details["match_rate"] = {"actual": mr, "threshold": self.qc.min_match_rate}
+
+        overall = sum(metrics.get(m, 0) * w for m, w in weights.items())
+        hard_failures = self._hard_failures(details, mode)
         passed = overall >= self.qc.min_overall_score and not hard_failures
 
         suggestions: list[str] = []
         adjustments: dict[str, Any] = {}
         if not passed:
-            adjustments, suggestions = _suggest_adjustments(
-                metrics, details, self.config.merger,
-            )
+            adjustments, suggestions = _suggest_adjustments(metrics, details, self.config.merger, mode)
 
         elapsed_ms = int((time.time() - t0) * 1000)
         report = QualityReport(
@@ -140,25 +162,31 @@ class QualityAnalyzer:
             metrics=metrics,
             metric_details=details,
             match_rate=mr,
+            articulation_coverage=ac,
             velocity_range=details.get("velocity_range", {}).get("range", 0),
             pitch_bend_max_jump=details.get("pitch_bend_continuity", {}).get("max_jump", 0),
             stuck_notes_count=details.get("timing_consistency", {}).get("stuck_notes", 0),
+            mode=mode,
             suggestions=suggestions,
             parameter_adjustments=adjustments,
             analysis_timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ"),
             processing_duration_ms=elapsed_ms,
         )
-        logger.info("Quality result: %s (%.2f)", "PASS" if passed else "FAIL", overall)
+        logger.info("Quality result [%s]: %s (%.2f)", mode, "PASS" if passed else "FAIL", overall)
         return report
 
-    def _hard_failures(self, details: dict[str, dict]) -> list[str]:
+    def _hard_failures(self, details: dict[str, dict], mode: str = "overlay") -> list[str]:
         fails: list[str] = []
         stuck = details.get("timing_consistency", {}).get("stuck_notes", 0)
         if stuck > self.qc.max_stuck_notes:
             fails.append(f"Stuck notes: {stuck}")
         mj = details.get("pitch_bend_continuity", {}).get("max_jump", 0)
-        if mj > self.qc.max_pitch_bend_jump * 2:
-            fails.append(f"Extreme pitch bend jump: {mj}")
+        if mode == "overlay":
+            if mj > 800:
+                fails.append(f"Pitch bend max jump too high for overlay: {mj} (max 800)")
+        else:
+            if mj > self.qc.max_pitch_bend_jump * 2:
+                fails.append(f"Extreme pitch bend jump: {mj}")
         too_quiet = details.get("velocity_range", {}).get("too_quiet_count", 0)
         if too_quiet > 5:
             fails.append(f"Too many quiet notes (velocity < 30): {too_quiet}")
@@ -237,11 +265,12 @@ def _suggest_adjustments(
     metrics: dict[str, float],
     details: dict[str, dict],
     mc: MergerConfig,
+    mode: str = "overlay",
 ) -> tuple[dict[str, Any], list[str]]:
     adj: dict[str, Any] = {}
     sugg: list[str] = []
 
-    if metrics.get("match_rate", 1) < 0.5:
+    if mode == "replacer" and metrics.get("match_rate", 1) < 0.5:
         if mc.matching_window_ticks < 240:
             nw = min(240, mc.matching_window_ticks + 30)
             adj["merger.matching_window_ticks"] = nw
@@ -250,6 +279,17 @@ def _suggest_adjustments(
             nt = min(6, mc.pitch_tolerance + 1)
             adj["merger.pitch_tolerance"] = nt
             sugg.append(f"Increase pitch tolerance → {nt} (was {mc.pitch_tolerance})")
+
+    if mode == "overlay":
+        ac = details.get("articulation_coverage", {}).get("actual", 1.0)
+        if ac < 0.7:
+            if mc.matching_window_ticks < 200:
+                nw = min(200, mc.matching_window_ticks + 30)
+                adj["merger.matching_window_ticks"] = nw
+                sugg.append(f"Low articulation coverage ({ac:.0%}): widen matching window → {nw} ticks")
+            if mc.pitch_tolerance < 4:
+                adj["merger.pitch_tolerance"] = 4
+                sugg.append("Increase pitch tolerance → 4 semitones for better matching")
 
     vr = details.get("velocity_range", {}).get("range", 100)
     if vr < 40:
@@ -266,8 +306,13 @@ def _suggest_adjustments(
             sugg.append(f"Lower min velocity → {new_min} (was {mc.velocity_min})")
 
     mj = details.get("pitch_bend_continuity", {}).get("max_jump", 0)
-    if mj > 1500:
-        sugg.append("Consider increasing pitch bend smoothing window")
+    if mj > 800:
+        sugg.append(
+            f"Pitch bend max jump {mj} is too high. "
+            "Set pitch_bend.max_jump_clamp to a lower value (e.g. 1500). "
+            "Do not suggest removing Guitar Pro."
+        )
+        adj["pitch_bend.max_jump_clamp"] = min(2000, max(500, mj - 500))
 
     offgrid = details.get("timing_consistency", {}).get("off_grid_ratio", 0)
     if offgrid > 0.20:

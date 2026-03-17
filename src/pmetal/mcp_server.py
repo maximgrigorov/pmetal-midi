@@ -50,10 +50,15 @@ INSTRUCTIONS = """\
 Если не знаешь — скажи "У меня нет проверенных данных по этому вопросу".
 
 == ЧТО ДЕЛАЕТ СИСТЕМА ==
-Объединяет два MIDI-файла:
-• Flat MIDI (из Guitar Pro 8) — правильные ноты, без динамики.
-• Expressive MIDI (из Neural Note) — реальная динамика, pitch bend, velocity, но ноты неточные.
-Результат — Hybrid MIDI: правильные ноты + живая динамика. Для VST (Shreddage 3.5 Hydra, Darkwall).
+Артикуляционный оверлей: берёт MIDI из Guitar Pro 8 (правильные ноты) и накладывает
+экспрессию из Neural Note (velocity, pitch bend, микро-тайминг атаки).
+
+Два режима merge_midi:
+• "overlay" (по умолчанию, РЕКОМЕНДОВАН) — GP8-ноты неприкосновенны. Из NN берутся
+  ТОЛЬКО velocity, pitch bend и смещение атаки. Количество нот на выходе = количеству на входе.
+• "replacer" (legacy) — старый режим замены нот. Не рекомендуется.
+
+Результат — Hybrid MIDI: правильные ноты GP8 + живая динамика NN. Для VST (Shreddage 3.5 Hydra, Darkwall).
 
 == ИСТОЧНИКИ ПРАВДЫ ==
 
@@ -121,10 +126,22 @@ Claude Desktop НЕ передаёт бинарное содержимое .mid/
 Если валидация не прошла → СТОП. Сообщи об ошибке явно. НЕ пытайся "починить" несовпадающие входные файлы.
 
 == ПАРАМЕТРЫ MERGE (точные значения) ==
-- merger.note_snap_tolerance: 0.15 (дефолт; не меняй без данных)
-- merger.pitch_correction: true
-- merger.bend_smooth: true
-- merger.velocity_preserve: 0.8
+- mode: "overlay" (дефолт; НЕ меняй на "replacer" без явного запроса пользователя)
+- merger.matching_window_ticks: 120 (±120 тиков для поиска соответствия)
+- merger.pitch_tolerance: 4 (±4 полутона)
+- merger.velocity_boost: 1.2
+- merger.velocity_min: 30
+- merger.humanize_max_ticks: 20
+
+== МЕТРИКИ КАЧЕСТВА (overlay) ==
+- articulation_coverage >= 0.70 — доля GP8-нот получивших артикуляцию
+- stuck_notes == 0
+- pitch_bend_max_jump < 800
+- velocity_range >= 50
+
+== ЗАПРЕЩЕНО В РЕКОМЕНДАЦИЯХ ==
+Никогда не предлагать: "убрать Guitar Pro", "использовать только Neural Note", "перезаписать GP8 с большей плотностью" как способ улучшить результат.
+GP8 — источник истины по нотам. Проблемы (stuck notes, pitch bend continuity) решаются настройкой merger/pitch_bend (only_inside_matched_notes, max_jump_clamp, smoothing), а не отказом от GP8.
 
 == ЯЗЫК ==
 Отвечай на том языке, на котором пишет пользователь (обычно русский).
@@ -500,6 +517,7 @@ def extract_track(
 def merge_midi(
     flat_midi_path: str,
     expressive_midi_path: str,
+    mode: str = "overlay",
     output_dir: str | None = None,
     target_tracks: list[int] | None = None,
     auto_retry: bool = True,
@@ -512,11 +530,19 @@ def merge_midi(
     The expressive MIDI (from Neural Note / audio transcription) provides
     velocity dynamics, pitch bends, and micro-timing.
 
+    Two modes are available:
+    - "overlay" (DEFAULT): GP8 notes stay untouched. Only velocity, pitch bends,
+      and micro-timing are transferred from the expressive file. Note count is
+      always preserved. This is the correct mode for 99% of use cases.
+    - "replacer" (legacy): note-replacement merge that tries to match and replace
+      notes. Use only if you have a specific reason.
+
     The result is a production-ready MIDI optimised for Shreddage 3.5 or similar VSTs.
 
     Args:
         flat_midi_path: Path to flat MIDI (e.g. /data/input/song_flat.mid)
         expressive_midi_path: Path to expressive MIDI (e.g. /data/input/song_neural.mid)
+        mode: Merge mode — "overlay" (default, recommended) or "replacer" (legacy)
         output_dir: Output directory (default: /data/output)
         target_tracks: Track indices to process (default: auto-detect guitar/bass)
         auto_retry: Retry with adjusted params if quality is low
@@ -526,7 +552,11 @@ def merge_midi(
         JSON with processing results, quality score, stats, and suggestions.
     """
     _check_rate_limit()
-    logger.info("merge_midi called: %s + %s", flat_midi_path, expressive_midi_path)
+
+    if mode not in ("overlay", "replacer"):
+        return json.dumps({"error": f"Invalid mode: {mode}. Use 'overlay' or 'replacer'."})
+
+    logger.info("merge_midi called: %s + %s (mode=%s)", flat_midi_path, expressive_midi_path, mode)
 
     flat_path = validate_path(flat_midi_path)
     expr_path = validate_path(expressive_midi_path)
@@ -540,6 +570,7 @@ def merge_midi(
         flat_midi_path=flat_path,
         expressive_midi_path=expr_path,
         output_dir=out_dir,
+        mode=mode,
         target_tracks=target_tracks,
         auto_retry=auto_retry,
     )
@@ -549,6 +580,7 @@ def merge_midi(
 
     response = {
         "success": result.state == ProcessingState.DONE,
+        "mode": mode,
         "output_path": str(result.output_path) if result.output_path else None,
         "quality_score": result.quality_score,
         "retry_count": result.retry_count,
@@ -565,24 +597,25 @@ def merge_midi(
 # ── Tool: analyze_quality ────────────────────────────────────────────
 
 @mcp.tool()
-def analyze_quality(midi_path: str) -> str:
+def analyze_quality(midi_path: str, mode: str = "overlay") -> str:
     """
     Analyse the quality of a MIDI file and provide improvement suggestions.
 
-    Checks note density, velocity range, pitch bend continuity,
-    timing consistency, and provides an overall quality score.
+    Checks velocity range, pitch bend continuity, timing consistency,
+    and (mode-dependent) articulation coverage or match rate.
 
     Args:
         midi_path: Path to the MIDI file to analyse
+        mode: Analysis mode — "overlay" (default) or "replacer"
 
     Returns:
         JSON quality report with scores and suggestions.
     """
     _check_rate_limit()
-    logger.info("analyze_quality: %s", midi_path)
+    logger.info("analyze_quality [%s]: %s", mode, midi_path)
     path = validate_path(midi_path)
     qa = QualityAnalyzer()
-    report = qa.analyze(path)
+    report = qa.analyze(path, mode=mode)
     return report.to_json()
 
 
@@ -678,7 +711,7 @@ def run_workflow(
         out_dir = DATA_DIR / "output"
         wf = WorkflowConfig(
             flat_midi_path=flat_path, expressive_midi_path=expr_path,
-            output_dir=out_dir, auto_retry=True,
+            output_dir=out_dir, mode="overlay", auto_retry=True,
         )
         orch = MidiOrchestrator(wf, app_config)
         result = orch.run()

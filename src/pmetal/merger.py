@@ -149,13 +149,21 @@ class MidiMerger:
                     clean_notes, matched, flat_tpb,
                 )
 
-                # pitch bends — scope to this track's time range
+                # pitch bends — only inside matched notes' duration to avoid "detuned" sound
+                # (expressive may have many more notes; bends from wrong notes must not apply)
                 track_start = min(n.start for n in clean_notes)
                 track_end = max(n.end for n in clean_notes)
                 track_bends = [
                     b for b in expr_bends if track_start <= b.time <= track_end
                 ]
+                if self.pbc.only_inside_matched_notes and matched:
+                    matched_spans = [(p.clean.start, p.clean.end) for p in matched]
+                    def _inside_matched(t: int) -> bool:
+                        return any(s <= t <= e for s, e in matched_spans)
+                    track_bends = [b for b in track_bends if _inside_matched(b.time)]
+                    logger.info("  Pitch bends inside matched notes: %d", len(track_bends))
                 smoothed = self._smooth_pitch_bends(track_bends)
+                smoothed = self._clamp_bend_jumps(smoothed)
                 logger.info(
                     "  Pitch bends: %d raw → %d smoothed", len(track_bends), len(smoothed),
                 )
@@ -325,6 +333,22 @@ class MidiMerger:
                 filtered.append(b)
         return filtered
 
+    def _clamp_bend_jumps(self, bends: list[PitchBend]) -> list[PitchBend]:
+        """Limit consecutive pitch bend difference to avoid 'detuned' spikes."""
+        if len(bends) < 2:
+            return bends
+        cap = getattr(self.pbc, "max_jump_clamp", 2500)
+        out: list[PitchBend] = [bends[0]]
+        for b in bends[1:]:
+            prev = out[-1].pitch
+            delta = b.pitch - prev
+            if abs(delta) > cap:
+                new_pitch = prev + (cap if delta > 0 else -cap)
+                new_pitch = int(np.clip(new_pitch, -8192, 8191))
+                b = PitchBend(time=b.time, pitch=new_pitch, channel=b.channel)
+            out.append(b)
+        return out
+
     # ------------------------------------------------------------------
     # Quantisation + humanisation
     # ------------------------------------------------------------------
@@ -343,14 +367,16 @@ class MidiMerger:
             offset_map[(pair.clean.pitch, pair.clean.start)] = pair.time_offset
 
         out: list[Note] = []
+        min_dur = max(1, grid // 4)  # at least 1 tick, or 1/4 grid
         for n in clean_notes:
             quantized = round(n.start / grid) * grid
             offset = offset_map.get((n.pitch, n.start), 0)
             humanize = int(clamp(offset, -hmax, hmax))
             new_start = max(0, int(quantized + humanize))
+            dur = max(min_dur, n.duration)
             out.append(Note(
                 start=new_start,
-                end=new_start + n.duration,
+                end=new_start + dur,
                 pitch=n.pitch,
                 velocity=n.velocity,
                 channel=n.channel,

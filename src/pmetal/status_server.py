@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import io
+import html
 import json
 import os
 import platform
 import re
 import time
-from email.parser import BytesParser
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -17,212 +17,126 @@ START_TIME = time.time()
 
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024  # 200 MB
 
-UPLOAD_HTML = """\
-<!DOCTYPE html>
-<html lang="ru">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>pmetal-midi — Upload</title>
-<style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-         background: #0d1117; color: #c9d1d9; min-height: 100vh;
-         display: flex; flex-direction: column; align-items: center; padding: 2rem; }
-  h1 { color: #58a6ff; margin-bottom: 0.5rem; }
-  .subtitle { color: #8b949e; margin-bottom: 2rem; }
-  .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px;
-          padding: 2rem; width: 100%; max-width: 600px; }
-  .drop-zone { border: 2px dashed #30363d; border-radius: 8px; padding: 3rem 1rem;
-               text-align: center; cursor: pointer; transition: all 0.2s;
-               margin-bottom: 1rem; }
-  .drop-zone:hover, .drop-zone.dragover { border-color: #58a6ff; background: #1c2333; }
-  .drop-zone p { color: #8b949e; margin-bottom: 0.5rem; }
-  .drop-zone .big { font-size: 1.2rem; color: #c9d1d9; }
-  input[type="file"] { display: none; }
-  select { background: #0d1117; color: #c9d1d9; border: 1px solid #30363d;
-           border-radius: 6px; padding: 0.5rem; width: 100%; margin-bottom: 1rem; }
-  label { display: block; color: #8b949e; margin-bottom: 0.3rem; font-size: 0.9rem; }
-  button { background: #238636; color: #fff; border: none; border-radius: 6px;
-           padding: 0.7rem 1.5rem; font-size: 1rem; cursor: pointer; width: 100%;
-           transition: background 0.2s; }
-  button:hover { background: #2ea043; }
-  button:disabled { background: #21262d; color: #484f58; cursor: not-allowed; }
-  .result { margin-top: 1rem; padding: 1rem; border-radius: 6px; }
-  .result.ok { background: #0d2818; border: 1px solid #238636; }
-  .result.err { background: #2d1117; border: 1px solid #da3633; }
-  .files { margin-top: 2rem; width: 100%; max-width: 600px; }
-  .files h2 { color: #58a6ff; margin-bottom: 0.5rem; font-size: 1.1rem; }
-  .file-list { list-style: none; }
-  .file-list li { padding: 0.3rem 0; color: #8b949e; font-family: monospace; font-size: 0.9rem; }
-  .file-list li .name { color: #c9d1d9; }
-  .file-list li a { color: #58a6ff; text-decoration: none; margin-left: 0.5rem; }
-  .file-list li a:hover { text-decoration: underline; }
-  .file-list li .del { color: #da3633; cursor: pointer; margin-left: 0.5rem; }
-  .file-list li .del:hover { text-decoration: underline; }
-  .file-list li .size { color: #6e7681; font-size: 0.8rem; margin-left: 0.3rem; }
-  .progress { display: none; margin-top: 0.5rem; }
-  .progress-bar { height: 4px; background: #30363d; border-radius: 2px; overflow: hidden; }
-  .progress-fill { height: 100%; background: #58a6ff; width: 0%; transition: width 0.3s; }
-</style>
-</head>
-<body>
-<h1>pmetal-midi</h1>
-<p class="subtitle">Upload MIDI / WAV files for processing</p>
-
-<div class="card">
-  <form id="uploadForm" method="POST" action="/upload" enctype="multipart/form-data">
-    <div class="drop-zone" id="dropZone">
-      <p class="big">Drop files here</p>
-      <p>or click to browse (.mid, .midi, .wav, .flac, .mp3)</p>
-      <input type="file" id="fileInput" name="file" accept=".mid,.midi,.wav,.flac,.mp3" multiple>
-    </div>
-    <div id="fileNames" style="margin-bottom:1rem; color:#58a6ff;"></div>
-    <label for="subdir">Destination</label>
-    <select id="subdir" name="subdir">
-      <option value="input" selected>input (for processing)</option>
-      <option value="output">output</option>
-    </select>
-    <button type="submit" id="submitBtn" disabled>Upload</button>
-    <div class="progress" id="progress">
-      <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
-    </div>
-  </form>
-  <div id="result"></div>
-</div>
-
-<div class="files" id="filesSection"></div>
-
-<script>
-const dropZone = document.getElementById('dropZone');
-const fileInput = document.getElementById('fileInput');
-const form = document.getElementById('uploadForm');
-const submitBtn = document.getElementById('submitBtn');
-const fileNames = document.getElementById('fileNames');
-const resultDiv = document.getElementById('result');
-const progress = document.getElementById('progress');
-const progressFill = document.getElementById('progressFill');
-
-dropZone.addEventListener('click', () => fileInput.click());
-dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
-dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
-dropZone.addEventListener('drop', e => {
-  e.preventDefault();
-  dropZone.classList.remove('dragover');
-  fileInput.files = e.dataTransfer.files;
-  updateFileNames();
-});
-fileInput.addEventListener('change', updateFileNames);
-
-function updateFileNames() {
-  const files = fileInput.files;
-  if (files.length > 0) {
-    fileNames.textContent = Array.from(files).map(f => f.name + ' (' + (f.size/1024).toFixed(1) + ' KB)').join(', ');
-    submitBtn.disabled = false;
-  } else {
-    fileNames.textContent = '';
-    submitBtn.disabled = true;
-  }
-}
-
-form.addEventListener('submit', async e => {
-  e.preventDefault();
-  const files = fileInput.files;
-  if (!files.length) return;
-
-  submitBtn.disabled = true;
-  submitBtn.textContent = 'Uploading...';
-  progress.style.display = 'block';
-  resultDiv.innerHTML = '';
-
-  const results = [];
-  for (let i = 0; i < files.length; i++) {
-    const fd = new FormData();
-    fd.append('file', files[i]);
-    fd.append('subdir', document.getElementById('subdir').value);
-    progressFill.style.width = ((i / files.length) * 100) + '%';
-    try {
-      const resp = await fetch('/upload', { method: 'POST', body: fd });
-      const data = await resp.json();
-      results.push(data);
-    } catch (err) {
-      results.push({ error: err.message, filename: files[i].name });
-    }
-  }
-  progressFill.style.width = '100%';
-
-  const allOk = results.every(r => r.success);
-  resultDiv.innerHTML = '<div class="result ' + (allOk ? 'ok' : 'err') + '">' +
-    results.map(r => r.success
-      ? '&#10004; ' + r.filename + ' (' + r.size_kb + ' KB) → ' + r.path
-      : '&#10008; ' + (r.filename || '?') + ': ' + r.error
-    ).join('<br>') + '</div>';
-
-  submitBtn.textContent = 'Upload';
-  submitBtn.disabled = false;
-  fileInput.value = '';
-  fileNames.textContent = '';
-  setTimeout(() => { progress.style.display = 'none'; progressFill.style.width = '0%'; }, 2000);
-  loadFiles();
-});
-
-async function loadFiles() {
-  try {
-    const resp = await fetch('/files-detail');
-    const data = await resp.json();
-    let html = '';
-    for (const [dir, files] of Object.entries(data)) {
-      if (!files.length) continue;
-      html += '<h2>/' + dir + '</h2><ul class="file-list">';
-      files.forEach(f => {
-        html += '<li><span class="name">' + f.name + '</span>';
-        html += '<span class="size">' + f.size + '</span>';
-        html += ' <a href="/download/' + dir + '/' + f.name + '" title="Download">&#8595;</a>';
-        html += ' <span class="del" onclick="deleteFile(\'' + dir + '/' + f.name + '\')" title="Delete">&#10005;</span>';
-        html += '</li>';
-      });
-      html += '</ul>';
-    }
-    document.getElementById('filesSection').innerHTML = html || '<p style="color:#8b949e">No files yet</p>';
-  } catch(e) {
-    const resp2 = await fetch('/files');
-    const data2 = await resp2.json();
-    let html = '';
-    for (const [dir, files] of Object.entries(data2)) {
-      if (!files.length) continue;
-      html += '<h2>/' + dir + '</h2><ul class="file-list">';
-      files.forEach(f => {
-        html += '<li><span class="name">' + f + '</span></li>';
-      });
-      html += '</ul>';
-    }
-    document.getElementById('filesSection').innerHTML = html;
-  }
-}
-
-async function deleteFile(path) {
-  if (!confirm('Delete ' + path + '?')) return;
-  try {
-    const resp = await fetch('/delete/' + path, { method: 'DELETE' });
-    const data = await resp.json();
-    if (data.success) loadFiles();
-    else alert('Error: ' + data.error);
-  } catch(e) { alert('Delete failed: ' + e.message); }
-}
-
-loadFiles();
-</script>
-</body>
-</html>
-"""
-
 _SAFE_FILENAME_RE = re.compile(r"[^a-zA-Z0-9._\-()]")
+
+CSS = """\
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+       background: #0d1117; color: #c9d1d9; min-height: 100vh;
+       display: flex; flex-direction: column; align-items: center; padding: 2rem; }
+h1 { color: #58a6ff; margin-bottom: 0.3rem; }
+.sub { color: #8b949e; margin-bottom: 1.5rem; }
+.card { background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+        padding: 1.5rem; width: 100%; max-width: 620px; margin-bottom: 1.5rem; }
+.card h2 { color: #58a6ff; font-size: 1rem; margin-bottom: 1rem; }
+input[type="file"] { margin-bottom: 0.8rem; color: #c9d1d9; }
+select { background: #0d1117; color: #c9d1d9; border: 1px solid #30363d;
+         border-radius: 4px; padding: 0.4rem; margin-bottom: 0.8rem; }
+label { color: #8b949e; font-size: 0.85rem; margin-right: 0.5rem; }
+button, input[type="submit"] {
+  background: #238636; color: #fff; border: none; border-radius: 6px;
+  padding: 0.6rem 1.2rem; font-size: 0.95rem; cursor: pointer; }
+button:hover, input[type="submit"]:hover { background: #2ea043; }
+.msg { margin-top: 0.8rem; padding: 0.8rem; border-radius: 6px; }
+.msg.ok { background: #0d2818; border: 1px solid #238636; color: #3fb950; }
+.msg.err { background: #2d1117; border: 1px solid #da3633; color: #f85149; }
+table { width: 100%; border-collapse: collapse; }
+th { text-align: left; color: #8b949e; font-size: 0.8rem; padding: 0.3rem 0.5rem;
+     border-bottom: 1px solid #30363d; }
+td { padding: 0.35rem 0.5rem; font-family: monospace; font-size: 0.85rem; }
+td.name { color: #c9d1d9; word-break: break-all; }
+td.size { color: #8b949e; white-space: nowrap; }
+td.actions { white-space: nowrap; }
+td.actions a { color: #58a6ff; text-decoration: none; margin-right: 0.8rem; }
+td.actions a:hover { text-decoration: underline; }
+td.actions a.del { color: #da3633; }
+.empty { color: #484f58; font-style: italic; padding: 0.5rem 0; }
+"""
 
 
 def _sanitize(name: str) -> str:
     name = Path(name).name
     name = _SAFE_FILENAME_RE.sub("_", name)
     return name[:200] if name else "upload"
+
+
+def _human_size(size: int) -> str:
+    if size >= 1024 * 1024:
+        return f"{size / 1024 / 1024:.1f} MB"
+    return f"{size / 1024:.1f} KB"
+
+
+def _build_page(message: str = "", msg_class: str = "") -> str:
+    """Build the full HTML page with server-side rendered file listing."""
+    file_rows = ""
+    for subdir in ("input", "output"):
+        p = DATA_DIR / subdir
+        if not p.exists():
+            continue
+        files = sorted(f for f in p.iterdir() if f.is_file())
+        if not files:
+            continue
+        file_rows += f'<tr><td colspan="4" style="color:#58a6ff; padding-top:1rem; font-weight:bold;">/{subdir}/</td></tr>\n'
+        for f in files:
+            sz = _human_size(f.stat().st_size)
+            fname = f.name
+            fname_esc = html.escape(fname)
+            fname_js = fname.replace("\\", "\\\\").replace("'", "\\'")
+            file_rows += (
+                f'<tr>'
+                f'<td class="name">{fname_esc}</td>'
+                f'<td class="size">{sz}</td>'
+                f'<td class="actions">'
+                f'<a href="/download/{subdir}/{urllib.parse.quote(fname)}">download</a>'
+                f'<a href="/delete/{subdir}/{urllib.parse.quote(fname)}" class="del" '
+                f'onclick="return confirm(\'Delete {fname_js}?\')">delete</a>'
+                f'</td></tr>\n'
+            )
+
+    if not file_rows:
+        file_rows = '<tr><td colspan="4" class="empty">No files yet</td></tr>'
+
+    msg_html = ""
+    if message:
+        msg_html = f'<div class="msg {msg_class}">{message}</div>'
+
+    return f"""<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pmetal-midi</title>
+<style>{CSS}</style>
+</head>
+<body>
+<h1>pmetal-midi</h1>
+<p class="sub">File manager for MIDI / WAV processing</p>
+
+<div class="card">
+  <h2>Upload files</h2>
+  <form method="POST" action="/upload" enctype="multipart/form-data">
+    <input type="file" name="file" accept=".mid,.midi,.wav,.flac,.mp3,.xml,.mxl" required><br>
+    <label>To:</label>
+    <select name="subdir">
+      <option value="input" selected>input</option>
+      <option value="output">output</option>
+    </select>
+    <input type="submit" value="Upload">
+  </form>
+  {msg_html}
+</div>
+
+<div class="card">
+  <h2>Files on server</h2>
+  <table>
+    <thead><tr><th>Name</th><th>Size</th><th>Actions</th></tr></thead>
+    <tbody>
+{file_rows}
+    </tbody>
+  </table>
+</div>
+</body>
+</html>"""
 
 
 def _extract_boundary(content_type: str) -> bytes | None:
@@ -274,9 +188,11 @@ class StatusHandler(BaseHTTPRequestHandler):
         elif self.path == "/health":
             self._send_json({"status": "ok"})
         elif self.path == "/" or self.path == "/upload":
-            self._send_html(UPLOAD_HTML)
+            self._send_html(_build_page())
         elif self.path.startswith("/download/"):
             self._handle_download()
+        elif self.path.startswith("/delete/"):
+            self._handle_delete_get()
         else:
             self.send_error(404)
 
@@ -288,30 +204,30 @@ class StatusHandler(BaseHTTPRequestHandler):
 
     def do_DELETE(self) -> None:
         if self.path.startswith("/delete/"):
-            self._handle_delete()
+            self._handle_delete_api()
         else:
             self.send_error(404)
 
     def _handle_upload(self) -> None:
         content_type = self.headers.get("Content-Type", "")
         if "multipart/form-data" not in content_type:
-            self._send_json({"error": "Expected multipart/form-data"}, code=400)
+            self._send_html(_build_page("Expected multipart/form-data", "err"))
             return
 
         content_length = int(self.headers.get("Content-Length", 0))
         if content_length > MAX_UPLOAD_BYTES:
-            self._send_json({"error": f"File too large ({content_length} bytes, max {MAX_UPLOAD_BYTES})"}, code=413)
+            self._send_html(_build_page(f"File too large ({content_length} bytes)", "err"))
             return
 
         body = self.rfile.read(content_length)
         boundary = _extract_boundary(content_type)
         if not boundary:
-            self._send_json({"error": "Missing multipart boundary"}, code=400)
+            self._send_html(_build_page("Missing multipart boundary", "err"))
             return
 
         file_data, filename, subdir = _parse_multipart(body, boundary)
         if not file_data or not filename:
-            self._send_json({"error": "No file provided"}, code=400)
+            self._send_html(_build_page("No file selected", "err"))
             return
 
         if subdir not in ("input", "output"):
@@ -323,19 +239,34 @@ class StatusHandler(BaseHTTPRequestHandler):
         target_path = target_dir / safe_name
         target_path.write_bytes(file_data)
 
-        self._send_json({
-            "success": True,
-            "filename": safe_name,
-            "path": str(target_path),
-            "size_kb": round(len(file_data) / 1024, 1),
-        })
+        size_str = _human_size(len(file_data))
+        self._send_html(_build_page(
+            f"Uploaded: {safe_name} ({size_str}) &rarr; /{subdir}/", "ok"
+        ))
 
-    def _handle_delete(self) -> None:
-        parts = self.path.split("/delete/", 1)
-        if len(parts) < 2:
-            self.send_error(404)
+    def _handle_delete_get(self) -> None:
+        """Delete via GET link (from browser onclick confirm)."""
+        rel = self.path.split("/delete/", 1)[-1]
+        rel = urllib.parse.unquote(rel)
+        if ".." in rel:
+            self._send_html(_build_page("Invalid path", "err"))
             return
-        rel = parts[1]
+        fpath = DATA_DIR / rel
+        if not fpath.is_file():
+            self._send_html(_build_page(f"File not found: {rel}", "err"))
+            return
+        allowed_dirs = {DATA_DIR / "input", DATA_DIR / "output"}
+        if fpath.parent not in allowed_dirs:
+            self._send_html(_build_page("Delete only allowed in input/ and output/", "err"))
+            return
+        fname = fpath.name
+        fpath.unlink()
+        self._send_html(_build_page(f"Deleted: {fname}", "ok"))
+
+    def _handle_delete_api(self) -> None:
+        """Delete via DELETE method (API/JS)."""
+        rel = self.path.split("/delete/", 1)[-1]
+        rel = urllib.parse.unquote(rel)
         if ".." in rel:
             self._send_json({"error": "Invalid path"}, code=403)
             return
@@ -351,11 +282,8 @@ class StatusHandler(BaseHTTPRequestHandler):
         self._send_json({"success": True, "deleted": rel})
 
     def _handle_download(self) -> None:
-        parts = self.path.split("/download/", 1)
-        if len(parts) < 2:
-            self.send_error(404)
-            return
-        rel = parts[1]
+        rel = self.path.split("/download/", 1)[-1]
+        rel = urllib.parse.unquote(rel)
         if ".." in rel:
             self.send_error(403)
             return
@@ -391,12 +319,7 @@ class StatusHandler(BaseHTTPRequestHandler):
                 files = []
                 for f in sorted(p.iterdir()):
                     if f.is_file():
-                        size = f.stat().st_size
-                        if size >= 1024 * 1024:
-                            size_str = f"{size / 1024 / 1024:.1f} MB"
-                        else:
-                            size_str = f"{size / 1024:.1f} KB"
-                        files.append({"name": f.name, "size": size_str})
+                        files.append({"name": f.name, "size": _human_size(f.stat().st_size)})
                 result[subdir] = files
             else:
                 result[subdir] = []

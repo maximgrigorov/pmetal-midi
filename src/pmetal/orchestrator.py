@@ -14,7 +14,6 @@ from typing import Any, Callable
 
 from .config import AppConfig
 from .exceptions import WorkflowError
-from .merger import MidiMerger
 from .models import MergeResult
 from .quality_analyzer import QualityAnalyzer, QualityReport
 
@@ -37,6 +36,7 @@ class WorkflowConfig:
     flat_midi_path: Path
     expressive_midi_path: Path
     output_dir: Path
+    mode: str = "overlay"  # "overlay" or "replacer"
     audio_path: Path | None = None
     config_path: Path | None = None
     target_tracks: list[int] | None = None
@@ -125,7 +125,7 @@ class MidiOrchestrator:
         self._pstats = ProcessingStats()
         self._state_start: float = 0.0
 
-        self.merger: MidiMerger | None = None
+        self.merger: Any = None  # MidiMerger or ArticulationOverlay
         self.quality_analyzer: QualityAnalyzer | None = None
         self.merge_result: MergeResult | None = None
         self.quality_report: QualityReport | None = None
@@ -239,11 +239,16 @@ class MidiOrchestrator:
 
     def _do_init(self) -> ProcessingState:
         with self._error_context("INIT"):
-            self._log("[INIT] Loading configuration")
+            self._log(f"[INIT] Loading configuration (mode={self.wf.mode})")
             if self.wf.config_path and self.wf.config_path.exists():
                 self.app_config = AppConfig.load(self.wf.config_path)
                 self._log(f"  Loaded config from {self.wf.config_path}")
-            self.merger = MidiMerger(self.app_config)
+            if self.wf.mode == "overlay":
+                from .articulation_overlay import ArticulationOverlay
+                self.merger = ArticulationOverlay(self.app_config)
+            else:
+                from .merger import MidiMerger
+                self.merger = MidiMerger(self.app_config)
             self.quality_analyzer = QualityAnalyzer(self.app_config)
             self.wf.output_dir.mkdir(parents=True, exist_ok=True)
             self._log("[INIT] Ready")
@@ -271,18 +276,26 @@ class MidiOrchestrator:
 
     def _do_merge(self) -> ProcessingState:
         with self._error_context("MERGE"):
-            self._log("[MERGE] Starting merge")
+            self._log(f"[MERGE] Starting merge (mode={self.wf.mode})")
             stem = self.wf.flat_midi_path.stem.replace("_flat", "").replace("_clean", "")
             output_path = self.wf.output_dir / f"{stem}_hybrid.mid"
 
             assert self.merger is not None
-            self.merge_result = self.merger.merge(
-                flat_midi_path=self.wf.flat_midi_path,
-                expressive_midi_path=self.wf.expressive_midi_path,
-                output_path=output_path,
-                target_tracks=self.wf.target_tracks,
-                audio_features=self.audio_features,
-            )
+            if self.wf.mode == "overlay":
+                self.merge_result = self.merger.merge(
+                    flat_midi_path=self.wf.flat_midi_path,
+                    expressive_midi_path=self.wf.expressive_midi_path,
+                    output_path=output_path,
+                    target_tracks=self.wf.target_tracks,
+                )
+            else:
+                self.merge_result = self.merger.merge(
+                    flat_midi_path=self.wf.flat_midi_path,
+                    expressive_midi_path=self.wf.expressive_midi_path,
+                    output_path=output_path,
+                    target_tracks=self.wf.target_tracks,
+                    audio_features=self.audio_features,
+                )
 
             if not self.merge_result.success:
                 raise WorkflowError(
@@ -290,10 +303,12 @@ class MidiOrchestrator:
                 )
 
             stats = self.merge_result.stats
+            coverage_key = "articulation_coverage" if self.wf.mode == "overlay" else "match_rate"
+            coverage_val = stats.get(coverage_key, stats.get("match_rate", 0))
             self._log(
-                f"[MERGE] Done — matched {stats.get('matched_notes', '?')}"
+                f"[MERGE] Done — {coverage_key} {stats.get('matched_notes', '?')}"
                 f"/{stats.get('clean_notes', '?')}"
-                f" ({stats.get('match_rate', 0) * 100:.1f}%)"
+                f" ({coverage_val * 100:.1f}%)"
             )
         return ProcessingState.OUTPUT
 
@@ -322,10 +337,11 @@ class MidiOrchestrator:
     def _do_quality(self) -> ProcessingState:
         with self._error_context("QUALITY_CHECK"):
             assert self.quality_analyzer is not None and self.merge_result is not None
-            self._log("[QUALITY] Running analysis")
+            self._log(f"[QUALITY] Running analysis (mode={self.wf.mode})")
             self.quality_report = self.quality_analyzer.analyze(
                 self.merge_result.output_path,  # type: ignore[arg-type]
                 merge_stats=self.merge_result.stats,
+                mode=self.wf.mode,
             )
             self.suggestions = self.quality_report.suggestions
             score = self.quality_report.overall_score
@@ -349,7 +365,12 @@ class MidiOrchestrator:
 
         if adjustments:
             self.app_config = self.app_config.merged_with(adjustments)
-            self.merger = MidiMerger(self.app_config)
+            if self.wf.mode == "overlay":
+                from .articulation_overlay import ArticulationOverlay
+                self.merger = ArticulationOverlay(self.app_config)
+            else:
+                from .merger import MidiMerger
+                self.merger = MidiMerger(self.app_config)
 
         if self.retry_count >= self.wf.max_retries:
             self._log("[RETRY] Max retries reached")

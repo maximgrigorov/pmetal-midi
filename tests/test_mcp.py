@@ -53,9 +53,11 @@ class TestMcpTools:
             out = tmp_path / "output"
             out.mkdir()
             result = json.loads(merge_midi(
-                str(flat_midi_path), str(expressive_midi_path), str(out),
+                str(flat_midi_path), str(expressive_midi_path),
+                mode="overlay", output_dir=str(out),
             ))
             assert result["success"] is True
+            assert result["mode"] == "overlay"
             assert result["quality_score"] > 0
 
     def test_extract_track(self, flat_midi_path: Path, tmp_path: Path):
