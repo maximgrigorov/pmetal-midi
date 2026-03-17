@@ -40,5 +40,5 @@ tracks:
     velocity_range: [70, 90]
 
 logging:
-  level: INFO
+  level: DEBUG
   directory: /data/logs

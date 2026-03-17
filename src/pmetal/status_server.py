@@ -32,7 +32,7 @@ UPLOAD_HTML = """\
   h1 { color: #58a6ff; margin-bottom: 0.5rem; }
   .subtitle { color: #8b949e; margin-bottom: 2rem; }
   .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px;
-          padding: 2rem; width: 100%%; max-width: 600px; }
+          padding: 2rem; width: 100%; max-width: 600px; }
   .drop-zone { border: 2px dashed #30363d; border-radius: 8px; padding: 3rem 1rem;
                text-align: center; cursor: pointer; transition: all 0.2s;
                margin-bottom: 1rem; }
@@ -41,17 +41,17 @@ UPLOAD_HTML = """\
   .drop-zone .big { font-size: 1.2rem; color: #c9d1d9; }
   input[type="file"] { display: none; }
   select { background: #0d1117; color: #c9d1d9; border: 1px solid #30363d;
-           border-radius: 6px; padding: 0.5rem; width: 100%%; margin-bottom: 1rem; }
+           border-radius: 6px; padding: 0.5rem; width: 100%; margin-bottom: 1rem; }
   label { display: block; color: #8b949e; margin-bottom: 0.3rem; font-size: 0.9rem; }
   button { background: #238636; color: #fff; border: none; border-radius: 6px;
-           padding: 0.7rem 1.5rem; font-size: 1rem; cursor: pointer; width: 100%%;
+           padding: 0.7rem 1.5rem; font-size: 1rem; cursor: pointer; width: 100%;
            transition: background 0.2s; }
   button:hover { background: #2ea043; }
   button:disabled { background: #21262d; color: #484f58; cursor: not-allowed; }
   .result { margin-top: 1rem; padding: 1rem; border-radius: 6px; }
   .result.ok { background: #0d2818; border: 1px solid #238636; }
   .result.err { background: #2d1117; border: 1px solid #da3633; }
-  .files { margin-top: 2rem; width: 100%%; max-width: 600px; }
+  .files { margin-top: 2rem; width: 100%; max-width: 600px; }
   .files h2 { color: #58a6ff; margin-bottom: 0.5rem; font-size: 1.1rem; }
   .file-list { list-style: none; }
   .file-list li { padding: 0.3rem 0; color: #8b949e; font-family: monospace; font-size: 0.9rem; }
@@ -63,7 +63,7 @@ UPLOAD_HTML = """\
   .file-list li .size { color: #6e7681; font-size: 0.8rem; margin-left: 0.3rem; }
   .progress { display: none; margin-top: 0.5rem; }
   .progress-bar { height: 4px; background: #30363d; border-radius: 2px; overflow: hidden; }
-  .progress-fill { height: 100%%; background: #58a6ff; width: 0%%; transition: width 0.3s; }
+  .progress-fill { height: 100%; background: #58a6ff; width: 0%; transition: width 0.3s; }
 </style>
 </head>
 <body>
@@ -140,7 +140,7 @@ form.addEventListener('submit', async e => {
     const fd = new FormData();
     fd.append('file', files[i]);
     fd.append('subdir', document.getElementById('subdir').value);
-    progressFill.style.width = ((i / files.length) * 100) + '%%';
+    progressFill.style.width = ((i / files.length) * 100) + '%';
     try {
       const resp = await fetch('/upload', { method: 'POST', body: fd });
       const data = await resp.json();
@@ -149,7 +149,7 @@ form.addEventListener('submit', async e => {
       results.push({ error: err.message, filename: files[i].name });
     }
   }
-  progressFill.style.width = '100%%';
+  progressFill.style.width = '100%';
 
   const allOk = results.every(r => r.success);
   resultDiv.innerHTML = '<div class="result ' + (allOk ? 'ok' : 'err') + '">' +
@@ -162,7 +162,7 @@ form.addEventListener('submit', async e => {
   submitBtn.disabled = false;
   fileInput.value = '';
   fileNames.textContent = '';
-  setTimeout(() => { progress.style.display = 'none'; progressFill.style.width = '0%%'; }, 2000);
+  setTimeout(() => { progress.style.display = 'none'; progressFill.style.width = '0%'; }, 2000);
   loadFiles();
 });
 
