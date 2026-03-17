@@ -58,6 +58,9 @@ UPLOAD_HTML = """\
   .file-list li .name { color: #c9d1d9; }
   .file-list li a { color: #58a6ff; text-decoration: none; margin-left: 0.5rem; }
   .file-list li a:hover { text-decoration: underline; }
+  .file-list li .del { color: #da3633; cursor: pointer; margin-left: 0.5rem; }
+  .file-list li .del:hover { text-decoration: underline; }
+  .file-list li .size { color: #6e7681; font-size: 0.8rem; margin-left: 0.3rem; }
   .progress { display: none; margin-top: 0.5rem; }
   .progress-bar { height: 4px; background: #30363d; border-radius: 2px; overflow: hidden; }
   .progress-fill { height: 100%%; background: #58a6ff; width: 0%%; transition: width 0.3s; }
@@ -165,22 +168,48 @@ form.addEventListener('submit', async e => {
 
 async function loadFiles() {
   try {
-    const resp = await fetch('/files');
+    const resp = await fetch('/files-detail');
     const data = await resp.json();
     let html = '';
     for (const [dir, files] of Object.entries(data)) {
       if (!files.length) continue;
       html += '<h2>/' + dir + '</h2><ul class="file-list">';
       files.forEach(f => {
-        html += '<li><span class="name">' + f + '</span>';
-        html += ' <a href="/download/' + dir + '/' + f + '" title="Download">&#8595;</a>';
+        html += '<li><span class="name">' + f.name + '</span>';
+        html += '<span class="size">' + f.size + '</span>';
+        html += ' <a href="/download/' + dir + '/' + f.name + '" title="Download">&#8595;</a>';
+        html += ' <span class="del" onclick="deleteFile(\'' + dir + '/' + f.name + '\')" title="Delete">&#10005;</span>';
         html += '</li>';
       });
       html += '</ul>';
     }
     document.getElementById('filesSection').innerHTML = html || '<p style="color:#8b949e">No files yet</p>';
-  } catch(e) {}
+  } catch(e) {
+    const resp2 = await fetch('/files');
+    const data2 = await resp2.json();
+    let html = '';
+    for (const [dir, files] of Object.entries(data2)) {
+      if (!files.length) continue;
+      html += '<h2>/' + dir + '</h2><ul class="file-list">';
+      files.forEach(f => {
+        html += '<li><span class="name">' + f + '</span></li>';
+      });
+      html += '</ul>';
+    }
+    document.getElementById('filesSection').innerHTML = html;
+  }
 }
+
+async function deleteFile(path) {
+  if (!confirm('Delete ' + path + '?')) return;
+  try {
+    const resp = await fetch('/delete/' + path, { method: 'DELETE' });
+    const data = await resp.json();
+    if (data.success) loadFiles();
+    else alert('Error: ' + data.error);
+  } catch(e) { alert('Delete failed: ' + e.message); }
+}
+
 loadFiles();
 </script>
 </body>
@@ -240,6 +269,8 @@ class StatusHandler(BaseHTTPRequestHandler):
             self._send_json(self._status())
         elif self.path == "/files":
             self._send_json(self._list_files())
+        elif self.path == "/files-detail":
+            self._send_json(self._list_files_detail())
         elif self.path == "/health":
             self._send_json({"status": "ok"})
         elif self.path == "/" or self.path == "/upload":
@@ -252,6 +283,12 @@ class StatusHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         if self.path == "/upload":
             self._handle_upload()
+        else:
+            self.send_error(404)
+
+    def do_DELETE(self) -> None:
+        if self.path.startswith("/delete/"):
+            self._handle_delete()
         else:
             self.send_error(404)
 
@@ -293,6 +330,26 @@ class StatusHandler(BaseHTTPRequestHandler):
             "size_kb": round(len(file_data) / 1024, 1),
         })
 
+    def _handle_delete(self) -> None:
+        parts = self.path.split("/delete/", 1)
+        if len(parts) < 2:
+            self.send_error(404)
+            return
+        rel = parts[1]
+        if ".." in rel:
+            self._send_json({"error": "Invalid path"}, code=403)
+            return
+        fpath = DATA_DIR / rel
+        if not fpath.is_file():
+            self._send_json({"error": f"File not found: {rel}"}, code=404)
+            return
+        allowed_dirs = {DATA_DIR / "input", DATA_DIR / "output"}
+        if fpath.parent not in allowed_dirs:
+            self._send_json({"error": "Delete only allowed in input/ and output/"}, code=403)
+            return
+        fpath.unlink()
+        self._send_json({"success": True, "deleted": rel})
+
     def _handle_download(self) -> None:
         parts = self.path.split("/download/", 1)
         if len(parts) < 2:
@@ -325,6 +382,25 @@ class StatusHandler(BaseHTTPRequestHandler):
             "input_files": len(list((DATA_DIR / "input").glob("*"))) if (DATA_DIR / "input").exists() else 0,
             "output_files": len(list((DATA_DIR / "output").glob("*"))) if (DATA_DIR / "output").exists() else 0,
         }
+
+    def _list_files_detail(self) -> dict:
+        result: dict[str, list[dict]] = {}
+        for subdir in ("input", "output"):
+            p = DATA_DIR / subdir
+            if p.exists():
+                files = []
+                for f in sorted(p.iterdir()):
+                    if f.is_file():
+                        size = f.stat().st_size
+                        if size >= 1024 * 1024:
+                            size_str = f"{size / 1024 / 1024:.1f} MB"
+                        else:
+                            size_str = f"{size / 1024:.1f} KB"
+                        files.append({"name": f.name, "size": size_str})
+                result[subdir] = files
+            else:
+                result[subdir] = []
+        return result
 
     def _list_files(self) -> dict:
         result: dict[str, list[str]] = {}
