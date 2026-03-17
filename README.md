@@ -48,10 +48,10 @@ make configure-claude
 
 ## Usage via Claude Desktop
 
-Everything happens in the **Chat** tab.
+Everything happens in the **Chat** tab. Files are uploaded via the web interface.
 
-- **MIDI files** (<1 MB): Drag & drop directly into chat. Claude uploads via `upload_file`.
-- **WAV files** (10-100+ MB): Upload via `make upload SRC=./guitar.wav`, then process in chat.
+**Upload files**: Open **http://alma:8100** in a browser → drag & drop files → click Upload.
+Then tell Claude in the chat what to do with them.
 
 | Say this | Tool called |
 |----------|-------------|

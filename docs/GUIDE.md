@@ -205,15 +205,26 @@ Download the filtered WAV → run through Neural Note.
 
 ### Step 2. Upload Files
 
-**MIDI files** (<1 MB): Drag & drop directly into Claude Desktop chat or
-click **+ button** → "Add files or photos".
+**IMPORTANT**: Claude Desktop CANNOT transfer binary files (.mid, .wav) via chat.
+Do NOT attach files to messages — it does not work.
 
-**WAV files** (10-100+ MB): Too large for chat. Upload via terminal:
+Use the **web interface** to upload:
+
+1. Open in browser: **http://192.168.50.103:8100**
+2. Drag and drop file(s) into the browser window (or click "Drop files here")
+3. Click **Upload**
+4. Files will appear in the list below
+
+Supported: `.mid`, `.midi`, `.wav`, `.flac`, `.mp3` (up to 200 MB)
+
+Results can also be downloaded from the same web interface (↓ button next to file).
+
+Alternatively via terminal:
 ```bash
 make upload SRC=./guitar_stem.wav
 ```
 
-Then in chat:
+After upload, in Claude Desktop chat:
 > Show files on the server
 
 ### Step 2.5. Multi-Track MIDI

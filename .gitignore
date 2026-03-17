@@ -8,3 +8,6 @@ __pycache__/
 .pytest_cache/
 dist/
 build/
+source.mid
+source_track_*.mid
+*.wav

@@ -35,7 +35,11 @@ These rules apply to ALL code, documentation, and LLM prompts:
 - MCP via HTTP on port 8200, bridged by `mcp-remote`
 - Always test with `make test-mcp` after deployment changes
 
-## File Transfer Limits
+## File Transfer
 
-- MIDI files (<1 MB): upload/download via chat (base64 through `upload_file`/`download_file`)
-- WAV files (10-100+ MB): upload via `make upload SRC=./file.wav`, process in chat
+Claude Desktop CANNOT transfer binary files (.mid, .wav) via chat attachments.
+- Upload: web interface at http://alma:8100 (drag & drop, up to 200 MB)
+- Upload (alt): `make upload SRC=./file.mid`
+- Download: web interface at http://alma:8100 (click ↓ next to file)
+- Download (alt): `make download FILE=output/result.mid`
+- DO NOT suggest `upload_file` with base64 from chat — this does not work
