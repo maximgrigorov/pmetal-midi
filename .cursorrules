@@ -1,0 +1,41 @@
+# pmetal-midi — Cursor Rules
+
+## Documentation Update Rule
+
+When adding, removing, or modifying MCP tools, CLI commands, or workflow steps:
+1. Update `INSTRUCTIONS` in `src/pmetal/mcp_server.py` (LLM-facing prompts)
+2. Update `README.md` (tool table, tool count, workflow diagram)
+3. Update `docs/GUIDE_RU.md` (Russian user guide — tool list, workflow, examples)
+4. Update `docs/GUIDE.md` (English user guide — mirror of GUIDE_RU)
+5. Update MCP prompts (`getting_started`, `troubleshoot`) in `mcp_server.py`
+
+Never leave documentation out of sync with code.
+
+## Strict MIDI Workflow Rules
+
+These rules apply to ALL code, documentation, and LLM prompts:
+
+- **Klang.io is FORBIDDEN** — 60-70% accuracy, octave errors, double notes
+- **Neural Note is the ONLY recommended tool** for guitar stem transcription
+- **Full MP3 is FORBIDDEN** — use guitar stems only (Suno Pro/Plus)
+- **No optimistic language** in prompts: no "maybe", "try", "should work"
+- **Exact parameter values** in suggestions, never vague advice
+
+## Code Style
+
+- Python 3.10+ type hints
+- Pydantic for config validation
+- `ruff` for linting (line-length 100)
+- Tests in `tests/` using pytest
+
+## Deployment
+
+- Container runs on `alma` server (podman)
+- `make redeploy` for code updates
+- MCP via HTTP on port 8200, bridged by `mcp-remote`
+- Always test with `make test-mcp` after deployment changes
+
+## File Transfer Limits
+
+- MIDI files (<1 MB): upload/download via chat (base64 through `upload_file`/`download_file`)
+- WAV files (10-100+ MB): upload via `make upload SRC=./file.wav`, process in chat

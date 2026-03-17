@@ -29,7 +29,7 @@ Darkwall, etc.). No programming or server knowledge required.
 
 | Term | Meaning |
 |------|---------|
-| **Transcription** | Converting audio (WAV) to MIDI. Done by Klang.io, Neural Note, or Basic Pitch. |
+| **Transcription** | Converting audio (WAV) to MIDI. Use ONLY Neural Note (85-95% accuracy). Klang.io is forbidden (60-70% with artifacts). |
 | **Fuzzy Matching** | Algorithm that pairs notes between flat and expressive MIDI, allowing small timing/pitch differences. |
 | **Match Rate** | Percentage of flat MIDI notes matched to expressive MIDI. 78% = 78 of 100 notes paired. |
 | **Quantization** | Snapping notes to a rhythmic grid (quarters, eighths, sixteenths). |
@@ -92,9 +92,11 @@ Switch to **Chat** if you're on another tab.
 In the chat window, near the input field, you should see a **hammer icon** or a
 label showing the number of available tools (e.g. "10 tools").
 
-Click it to see all 10 tools:
+Click it to see all 12 tools:
 - `upload_file` — upload a file from chat to the server
 - `download_file` — download a file from server to chat
+- `eq_filter` — **EQ pre-processing of WAV** (solo/rhythm guitar isolation before Neural Note)
+- `extract_track` — **extract single track** from multi-track MIDI
 - `merge_midi` — merge MIDI files
 - `analyze_quality` — quality analysis of MIDI output
 - `analyze_audio` — audio analysis (tempo, transients, spectrum)
@@ -137,111 +139,122 @@ make configure-claude
 
 ---
 
-## Part 4. Step-by-Step Workflow
+## Part 4. Strict Workflow
 
-### Overview
+### Overview (No Variations)
 
 ```
-Suno  →  WAV stems  →  Transcription  →  Guitar Pro 8  →  Flat MIDI
-                                                              ↓
-Neural Note  →  Expressive MIDI  ──────────────────→  pmetal-midi
-                                                              ↓
-                                                        Hybrid MIDI
-                                                              ↓
-                                                       DAW + Shreddage
+1. Suno → Request stems (guitar only, NOT full MP3)
+2. Guitar stem → Neural Note (Monophonic, Electric Guitar, Medium sensitivity)
+3. If solo+rhythm combined → eq_filter to isolate BEFORE Neural Note
+4. Neural output + Guitar Pro 8 manual transcription → *_flat.mid + *_neural.mid
+5. If multi-track MIDI → extract_track to isolate target track
+6. merge_midi(flat, neural) with strict config
+7. Output → DAW + VST
 ```
+
+### FORBIDDEN
+
+| What | Why |
+|------|-----|
+| Full MP3 from Suno | Neural Note detects drum hits as pitch |
+| Klang.io | 60-70% accuracy with artifacts (octave errors, double notes) |
+| Stems without Pro/Plus | Suno requires Pro/Plus for stem export |
+
+### Recommended Transcription Tools
+
+| Tool | Accuracy | Polyphony | Bends | Status |
+|------|----------|-----------|-------|--------|
+| Neural Note | 85-95% | Mono | Excellent | **RECOMMENDED** |
+| Klang.io | 60-70% | Poly | Rough | **FORBIDDEN** |
+| Melodyne | 90-98% | Mono/poly | Excellent | Alternative (if budget allows) |
 
 ### Step 1. Prepare Your Files
 
 For each song you need two files:
 
 1. **Flat MIDI** (`song_flat.mid`):
-   - Download the song from Suno
-   - Transcribe via Klang.io or Basic Pitch
-   - Open in Guitar Pro 8
+   - Take guitar WAV stem from Suno (Pro/Plus)
+   - Transcribe via Neural Note (Monophonic, Electric Guitar, Medium)
+   - Open result in Guitar Pro 8
    - Clean up notes, fix errors
    - Export as MIDI
 
 2. **Expressive MIDI** (`song_neural.mid`):
-   - Take the guitar WAV stem from Suno
-   - Run through Neural Note or audio-to-midi
-   - Get MIDI with real dynamics
+   - Same WAV stem → Neural Note
+   - Save MIDI output directly (no editing)
 
-### Step 2. Upload Files via Chat
+### Step 1.5. EQ Pre-Processing (if solo and rhythm guitar in one stem)
 
-Drag and drop both MIDI files directly into the Claude Desktop chat window,
-or click the **+ button** → "Add files or photos".
+If the stem mixes solo and rhythm guitar, run through EQ filter
+**BEFORE** Neural Note transcription:
 
-Then type:
+Upload WAV to server (`make upload SRC=./guitar_stem.wav`), then in chat:
 
-> Here are two files: song_flat.mid (flat MIDI from Guitar Pro) and
-> song_neural.mid (expressive from Neural Note). Upload them to the server
-> and show me the info.
+> Apply solo_guitar filter to guitar_stem.wav
 
-Claude will automatically:
-1. Call `upload_file` for each file
-2. Call `midi_info` for analysis
-3. Show the track structure
+Available presets:
+| Preset | Effect |
+|--------|--------|
+| `solo_guitar` | Highpass 800 Hz + boost 2-4 kHz (isolates lead guitar) |
+| `rhythm_guitar` | Lowpass 2000 Hz + boost 200-500 Hz (isolates rhythm) |
+| `bass` | Lowpass 800 Hz + boost 60-250 Hz (isolates bass guitar) |
+| `custom` | All parameters user-specified |
+
+Download the filtered WAV → run through Neural Note.
+
+### Step 2. Upload Files
+
+**MIDI files** (<1 MB): Drag & drop directly into Claude Desktop chat or
+click **+ button** → "Add files or photos".
+
+**WAV files** (10-100+ MB): Too large for chat. Upload via terminal:
+```bash
+make upload SRC=./guitar_stem.wav
+```
+
+Then in chat:
+> Show files on the server
+
+### Step 2.5. Multi-Track MIDI
+
+If flat MIDI contains multiple tracks (multi-track export from Guitar Pro):
+
+1. Call `midi_info` to see all tracks:
+   > Show info for song_flat.mid
+
+2. Extract the target track:
+   > Extract track 3 from song_flat.mid
+
+3. Use the extracted file for merge.
 
 ### Step 3. Run the Merge
 
-Type:
-
 > Merge song_flat.mid and song_neural.mid
 
-Claude will call `merge_midi` and show a detailed log:
-
-```
-[INIT] Loading configuration
-[ANALYZE] Validating input files
-  song_flat.mid (15.2 KB)
-  song_neural.mid (8.4 KB)
-[MERGE] Starting merge
-  Track 6 (Solo Guitar): 342 notes
-    Matched 267 / 342 (78.1%)
-    Velocity range: 34–127
-    Pitch bends: 183 → 96 (smoothed)
-[QUALITY] Score 0.79 — PASS
-Output: /data/output/song_hybrid.mid
-```
+For multi-track files, specify the target track:
+> Merge song_flat.mid and song_neural.mid, process only track 3
 
 ### Step 4. Evaluate the Result
 
-Ask Claude:
-
 > Analyze the quality of the output file
 
-Claude will show a detailed report:
+If result < 0.70, Claude states **exact values** for retry (not "try"):
 ```
-  [+] density: 0.85
-  [+] pitch_bend_continuity: 0.91
-  [+] velocity_range: 0.78
-  [+] timing_consistency: 0.82
-  [-] match_rate: 0.62
-
-  Overall: 0.79 — PASS
+  match_rate < 0.5 → matching_window_ticks=200, pitch_tolerance=5
+  velocity_range < 0.6 → velocity_boost=1.4
+  pitch_bend_continuity < 0.6 → smoothing_window=15
 ```
 
-If the result is poor (<0.70), Claude will suggest corrections:
-```
-  1. Widen matching window → 180 ticks
-  2. Increase pitch tolerance → 5
-```
+### Step 5. Retry with Specified Parameters
 
-### Step 5. Retry with Different Parameters (if needed)
-
-> Retry the merge with matching_window_ticks=180 and velocity_boost=1.3
-
-Claude will re-run merge_midi with the new parameters.
+> Retry the merge with matching_window_ticks=200 and velocity_boost=1.4
 
 ### Step 6. Download the Result
 
-Type:
-
 > Download the result
 
-Claude will call `download_file` and deliver `song_hybrid.mid` right in the chat.
-Open it in your DAW.
+Claude calls `download_file` and delivers `song_hybrid.mid` in chat.
 
 ---
 
@@ -251,17 +264,27 @@ Open it in your DAW.
 
 | What to say | What happens |
 |-------------|--------------|
-| (attach file) "Upload this as song_flat.mid" | Calls `upload_file` — saves file on server |
-| "Download the result song_hybrid.mid" | Calls `download_file` — delivers file in chat |
-| "Show server status" | Calls `get_status` — version, CPU, RAM, file counts |
-| "Show files" | Calls `list_files` — input and output file listing |
-| "Show info for song_flat.mid" | Calls `midi_info` — tracks, note counts, TPB |
-| "Merge flat.mid and neural.mid" | Calls `merge_midi` — full pipeline with auto-retry |
-| "Process all files in /data/input" | Calls `run_workflow` — batch processing of all pairs |
-| "Process only tracks 3 and 5" | Calls `merge_midi` with target_tracks=[3, 5] |
-| "Analyze quality of output.mid" | Calls `analyze_quality` — 5 metrics + suggestions |
-| "Analyze audio guitar.wav" | Calls `analyze_audio` — tempo, transients, spectrum |
-| "Show processing log" | Calls `get_processing_log` — recent log lines |
+| (attach MIDI) "Upload this as song_flat.mid" | `upload_file` — saves on server |
+| "Download the result song_hybrid.mid" | `download_file` — delivers in chat |
+| "Show server status" | `get_status` — version, CPU, RAM |
+| "Show files" | `list_files` — file listing |
+| "Show info for song_flat.mid" | `midi_info` — tracks, notes, TPB |
+| "Merge flat.mid and neural.mid" | `merge_midi` — full pipeline |
+| "Process only track 3" | `merge_midi` with target_tracks=[3] |
+| "Analyze quality of output.mid" | `analyze_quality` — 5 metrics |
+| "Analyze audio guitar.wav" | `analyze_audio` — tempo, transients |
+| "Show processing log" | `get_processing_log` |
+
+### EQ Filtering & Multi-Track
+
+| What to say | What happens |
+|-------------|--------------|
+| "Apply solo_guitar filter to guitar_stem.wav" | `eq_filter` — highpass 800 Hz + boost 2-4 kHz |
+| "Apply rhythm_guitar filter to guitar_stem.wav" | `eq_filter` — lowpass 2000 Hz + boost 200-500 Hz |
+| "Apply bass filter to bass_stem.wav" | `eq_filter` — lowpass 800 Hz + boost 60-250 Hz |
+| "What tracks are in song_flat.mid?" | `midi_info` — all tracks listed |
+| "Extract track 3 from song_flat.mid" | `extract_track` — separate MIDI with one track |
+| "Process all files in /data/input" | `run_workflow` — batch processing |
 
 ### Fine-Tuning
 
@@ -345,18 +368,37 @@ For multiple songs, place them all in `/data/input/` with suffixes:
 Tell Claude: "Process all files in /data/input" — the system finds all pairs
 and processes each one.
 
+### EQ Filtering (eq_filter)
+
+If solo and rhythm guitar are combined in one Suno stem, run the WAV through
+an EQ filter **before** Neural Note transcription:
+
+- **solo_guitar**: highpass 800 Hz + boost 2-4 kHz → isolates lead guitar
+- **rhythm_guitar**: lowpass 2000 Hz + boost 200-500 Hz → isolates rhythm
+- **bass**: lowpass 800 Hz + boost 60-250 Hz → isolates bass
+- **custom**: all parameters user-specified
+
+This improves Neural Note accuracy for transcription.
+
+### Multi-Track MIDI (extract_track)
+
+If the user provides a multi-track MIDI from Guitar Pro (multiple tracks):
+1. `midi_info` shows all tracks with indices
+2. `extract_track` extracts one track into a separate file
+3. `merge_midi` with `target_tracks` processes only specified tracks
+
+Each run processes **one track at a time**.
+
 ### Audio Analysis
 
-If you have a guitar WAV stem from Suno, upload it and say:
-"Analyze audio guitar.wav"
+If you have a guitar WAV stem from Suno, upload to server (`make upload SRC=./guitar.wav`)
+and say in chat: "Analyze audio guitar.wav"
 
 The system detects:
 - **Tempo** (BPM) — automatic or manually specified
 - **Transients** (note attacks) — for velocity correction
 - **Spectral peaks** — for pitch bend validation
 - **Beats** — for timing verification
-
-These features are then used for **audio-guided velocity** during merge.
 
 ### Security & Monitoring
 
