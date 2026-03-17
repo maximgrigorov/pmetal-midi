@@ -58,6 +58,58 @@ class TestMcpTools:
             assert result["success"] is True
             assert result["quality_score"] > 0
 
+    def test_extract_track(self, flat_midi_path: Path, tmp_path: Path):
+        with (
+            patch("pmetal.mcp_server.validate_path", _bypass_validate_path),
+            patch("pmetal.mcp_server.DATA_DIR", tmp_path),
+        ):
+            (tmp_path / "input").mkdir(exist_ok=True)
+            from pmetal.mcp_server import extract_track
+            result = json.loads(extract_track(str(flat_midi_path), 0))
+            assert result["success"] is True
+            assert result["note_count"] >= 0
+            assert Path(result["output_path"]).exists()
+
+    def test_extract_track_invalid_index(self, flat_midi_path: Path, tmp_path: Path):
+        with patch("pmetal.mcp_server.validate_path", _bypass_validate_path):
+            from pmetal.mcp_server import extract_track
+            result = json.loads(extract_track(str(flat_midi_path), 999))
+            assert "error" in result
+
+    def test_eq_filter(self, tmp_path: Path):
+        import numpy as np
+        import soundfile as sf
+
+        wav_path = tmp_path / "test_guitar.wav"
+        sr = 22050
+        duration = 2.0
+        t = np.linspace(0, duration, int(sr * duration), endpoint=False)
+        signal = np.sin(2 * np.pi * 440 * t) * 0.5
+        sf.write(str(wav_path), signal, sr)
+
+        with (
+            patch("pmetal.mcp_server.validate_path", _bypass_validate_path),
+            patch("pmetal.mcp_server.DATA_DIR", tmp_path),
+        ):
+            (tmp_path / "input").mkdir(exist_ok=True)
+            from pmetal.mcp_server import eq_filter
+            result = json.loads(eq_filter(str(wav_path), preset="solo_guitar"))
+            assert result["success"] is True
+            assert result["preset"] == "solo_guitar"
+            assert Path(result["output_path"]).exists()
+
+    def test_eq_filter_invalid_preset(self, tmp_path: Path):
+        import numpy as np
+        import soundfile as sf
+
+        wav_path = tmp_path / "test.wav"
+        sf.write(str(wav_path), np.zeros(1000), 22050)
+
+        with patch("pmetal.mcp_server.validate_path", _bypass_validate_path):
+            from pmetal.mcp_server import eq_filter
+            result = json.loads(eq_filter(str(wav_path), preset="nonexistent"))
+            assert "error" in result
+
     def test_get_processing_log_no_file(self, tmp_path: Path):
         with patch("pmetal.mcp_server.DATA_DIR", tmp_path):
             from pmetal.mcp_server import get_processing_log

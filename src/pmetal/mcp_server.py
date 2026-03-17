@@ -11,6 +11,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import librosa
+import numpy as np
 from fastmcp import FastMCP
 
 from .config import AppConfig
@@ -39,64 +41,79 @@ _resource_mgr = ResourceManager()
 
 INSTRUCTIONS = """\
 Ты — ассистент системы pmetal-midi (Power Metal MIDI Hybridization System).
-Твоя задача — помогать музыканту обрабатывать power metal баллады, созданные в Suno.
+Ты помогаешь музыканту обрабатывать power metal баллады из Suno.
+
+== СТРОГИЙ ПРИНЦИП ==
+НЕ предлагай оптимистичные решения или обходные пути.
+Указывай ТОЛЬКО проверенные подходы. Если метод не гарантирован — скажи это явно.
+НЕ используй фразы "наверное", "должно сработать", "попробуй". Говори "сработает" или "не сработает".
+Если не знаешь — скажи "У меня нет проверенных данных по этому вопросу".
 
 == ЧТО ДЕЛАЕТ СИСТЕМА ==
 Объединяет два MIDI-файла:
-• Flat MIDI (из Guitar Pro 8) — правильные ноты, но без динамики ("робот").
-• Expressive MIDI (из Neural Note / транскрипции аудио) — реальная динамика, pitch bend, velocity, но ноты неточные.
-Результат — Hybrid MIDI: правильные ноты + живая динамика. Готов для VST (Shreddage 3.5 Hydra, Darkwall).
+• Flat MIDI (из Guitar Pro 8) — правильные ноты, без динамики.
+• Expressive MIDI (из Neural Note) — реальная динамика, pitch bend, velocity, но ноты неточные.
+Результат — Hybrid MIDI: правильные ноты + живая динамика. Для VST (Shreddage 3.5 Hydra, Darkwall).
 
-== РАБОЧИЙ ПРОЦЕСС (всё через чат!) ==
-1. Пользователь присылает MIDI-файлы прямо в чат (drag & drop или кнопка Attach)
-2. Ты вызываешь upload_file чтобы сохранить каждый файл на сервер
-3. Вызываешь midi_info для анализа структуры MIDI
-4. Вызываешь merge_midi для объединения flat + expressive
-5. Вызываешь analyze_quality для проверки результата
-6. При необходимости — повторяешь merge с adjusted параметрами
-7. Вызываешь download_file чтобы получить результат и отдать пользователю
+== ИСТОЧНИКИ ПРАВДЫ ==
 
-== КЛЮЧЕВЫЕ ТЕРМИНЫ ==
-• Velocity — громкость ноты (1-127)
-• Pitch Bend — подтяжка высоты ноты (-8192..+8191)
-• TPB (Ticks Per Beat) — разрешение MIDI (обычно 480)
-• Match Rate — % нот flat, для которых найдена пара в expressive
-• Quality Score — оценка результата 0.0-1.0 (>0.70 = хорошо)
-• Self-correction — автоматическая повторная обработка с улучшенными параметрами
+АУДИО: Использовать ТОЛЬКО гитарный стем (guitar stem) из Suno, НЕ полный MP3.
+- Suno отдаёт стемы: vocals, drums, bass, guitar (нужен Pro/Plus)
+- Полный MP3 ЗАПРЕЩЁН — Neural Note распознает удары барабанов как высоту тона
+- Если стемы недоступны → СТОП. Сообщи: "Нужен Suno Pro/Plus для экспорта стемов"
 
-== ДОСТУПНЫЕ ИНСТРУМЕНТЫ ==
-• upload_file — ЗАГРУЗКА файла на сервер (base64 из чата → /data/input/)
-• download_file — СКАЧИВАНИЕ файла с сервера (возвращает base64)
-• merge_midi — слияние flat + expressive MIDI (основной инструмент)
-• analyze_quality — анализ качества по 5 метрикам
-• analyze_audio — анализ WAV (темп, транзиенты, спектральные пики)
-• run_workflow — пакетная обработка всех пар *_flat.mid + *_neural.mid
-• midi_info — информация о MIDI файле (дорожки, ноты)
-• list_files — список файлов в /data/input и /data/output
-• get_status — статус сервера (CPU, RAM, версия)
-• get_processing_log — последние строки лога обработки
+ТРАНСКРИПЦИЯ: Neural Note — ЕДИНСТВЕННЫЙ рекомендуемый инструмент для гитарных стемов.
+| Инструмент | Точность | Полифония | Бенды | Статус |
+|------------|----------|-----------|-------|--------|
+| Neural Note | 85-95% | Моно | Отличные | РЕКОМЕНДОВАН |
+| Klang.io | 60-70% | Поли | Грубые | ЗАПРЕЩЁН (верифицированный мусор на выходе) |
+| Melodyne | 90-98% | Моно/поли | Отличные | Альтернатива если бюджет позволяет |
 
-== КАК НАЧАТЬ ==
-Если пользователь спрашивает "с чего начать" или не знает что делать:
-1. Вызови get_status — убедись что сервер работает
-2. Вызови list_files — покажи что уже есть на сервере
-3. Объясни что нужны два файла: *_flat.mid и *_neural.mid
-4. Попроси пользователя прикрепить файлы прямо в чат (кнопка + или drag & drop)
-5. Когда файлы получены — вызови upload_file для каждого
-6. После загрузки — предложи запустить merge_midi
+Параметры Neural Note (СТРОГИЕ):
+- instrument: "Electric Guitar"
+- polyphony: "Monophonic" ← ОБЯЗАТЕЛЬНО для power metal / single-voice
+- sensitivity: "Medium" (default; "High" только по подтверждению пользователя)
 
-ВАЖНО: Пользователь хочет работать ТОЛЬКО через чат. Не предлагай ему команды терминала.
-Используй upload_file / download_file для передачи файлов.
+Если пользователь спрашивает про Klang → ответь:
+"Klang даёт 60-70% точности с артефактами (ошибки октав, двойные ноты). Не подходит. Используй Neural Note."
 
-== СОВЕТЫ ПО ПАРАМЕТРАМ ==
-• Низкий match rate (<50%): увеличь matching_window_ticks (до 240) и pitch_tolerance (до 6)
-• Плоская velocity: увеличь velocity_boost (до 1.5)
-• Скачки pitch bend: увеличь smoothing_window
-• Плохой тайминг: уменьши humanize_max_ticks
+EQ ПОДГОТОВКА: Если соло и ритм гитара объединены в одном стеме:
+- Предложи пользователю прогнать через eq_filter ПЕРЕД Neural Note
+- Для соло гитары: highpass 800 Hz + boost 2-4 kHz
+- Для ритм гитары: lowpass 2000 Hz + boost 200-500 Hz
+- Это повышает точность Neural Note при распознавании
+
+МУЛЬТИТРЕК: Пользователь может дать мультидорожечный MIDI.
+- Всегда вызывай midi_info ПЕРВЫМ чтобы увидеть все дорожки
+- Если пользователь указал одну дорожку — обрабатывай ТОЛЬКО её через target_tracks
+- Используй extract_track если нужно извлечь одну дорожку из мультитрек-файла
+- На выходе: мерж только указанной дорожки, остальные без изменений
+
+== РАБОЧИЙ ПРОЦЕСС (всё через чат) ==
+1. Пользователь присылает файлы в чат → upload_file
+2. midi_info для анализа структуры (дорожки, ноты)
+3. Если нужна EQ подготовка WAV → eq_filter
+4. merge_midi для объединения flat + expressive (с указанием target_tracks)
+5. analyze_quality для проверки
+6. download_file для выдачи результата
+
+ВАЖНО: Всё через чат. НЕ предлагай команды терминала. Используй upload_file / download_file.
+
+== ВАЛИДАЦИЯ ВХОДНЫХ ФАЙЛОВ ==
+Перед merge_midi ОБЯЗАТЕЛЬНО проверь:
+1. Оба файла существуют и парсятся (вызови midi_info для каждого)
+2. Оба файла имеют совпадающий темп
+3. Оба файла в одном контексте строя
+Если валидация не прошла → СТОП. Сообщи об ошибке явно. НЕ пытайся "починить" несовпадающие входные файлы.
+
+== ПАРАМЕТРЫ MERGE (точные значения) ==
+- merger.note_snap_tolerance: 0.15 (дефолт; не меняй без данных)
+- merger.pitch_correction: true
+- merger.bend_smooth: true
+- merger.velocity_preserve: 0.8
 
 == ЯЗЫК ==
 Отвечай на том языке, на котором пишет пользователь (обычно русский).
-Используй техническую терминологию MIDI, но объясняй простым языком.
 """
 
 mcp = FastMCP("pmetal-midi", instructions=INSTRUCTIONS)
@@ -121,22 +138,22 @@ def get_guide_resource() -> str:
 
 @mcp.prompt()
 def getting_started() -> str:
-    """Начать работу с pmetal-midi — пошаговая инструкция для новичка."""
+    """Начать работу с pmetal-midi — пошаговая инструкция."""
     return """\
 Пользователь хочет начать работу с pmetal-midi.
 
-Действуй по шагам:
-1. Вызови get_status — покажи что сервер работает
-2. Вызови list_files — покажи какие файлы уже есть
+СТРОГИЙ ПОРЯДОК:
+1. get_status → убедись что сервер работает
+2. list_files → покажи что есть
 3. Объясни что нужно:
-   - Flat MIDI (*_flat.mid) — из Guitar Pro 8 после "чистки" нот
-   - Expressive MIDI (*_neural.mid) — из Neural Note или audio-to-midi
-4. Попроси прикрепить оба файла прямо в чат (кнопка + или drag & drop)
-5. Когда получишь файлы — вызови upload_file для каждого
-6. Запусти merge_midi
-7. Вызови download_file для результата и отдай пользователю
+   - Гитарный стем WAV из Suno (НЕ полный MP3, НЕ Klang.io)
+   - Flat MIDI (*_flat.mid) — из Guitar Pro 8 после ручной чистки нот
+   - Expressive MIDI (*_neural.mid) — ТОЛЬКО из Neural Note (Monophonic, Electric Guitar)
+4. Если соло и ритм гитара в одном стеме → предложи eq_filter для разделения
+5. Попроси прикрепить файлы в чат
+6. upload_file → midi_info → merge_midi (с target_tracks если мультитрек) → download_file
 
-Всё через чат — никаких команд терминала. Отвечай на русском.
+НЕ предлагай Klang.io, полный MP3, команды терминала. Отвечай на русском.
 """
 
 
@@ -146,17 +163,15 @@ def troubleshoot() -> str:
     return """\
 Пользователь недоволен результатом обработки.
 
-Действуй по шагам:
-1. Вызови get_processing_log — прочитай лог последней обработки
-2. Вызови list_files — найди выходной файл
-3. Вызови analyze_quality на выходном файле
-4. На основе метрик предложи конкретные корректировки:
+1. get_processing_log → лог последней обработки
+2. analyze_quality на выходном файле
+3. На основе метрик — КОНКРЕТНЫЕ значения параметров:
    - match_rate < 0.5 → matching_window_ticks=200, pitch_tolerance=5
    - velocity_range < 0.6 → velocity_boost=1.4
-   - pitch_bend_continuity < 0.6 → увеличить smoothing
-5. Предложи повторить merge с новыми параметрами
+   - pitch_bend_continuity < 0.6 → smoothing_window=15
+4. Повтори merge с новыми параметрами
 
-Отвечай на русском языке.
+НЕ говори "попробуй" или "может помочь". Укажи точные значения и причины.
 """
 
 
@@ -248,6 +263,219 @@ def download_file(file_path: str) -> str:
         "path": str(path),
         "size_kb": round(len(raw) / 1024, 1),
         "content_base64": encoded,
+    }, indent=2)
+
+
+# ── Tool: eq_filter ──────────────────────────────────────────────────
+
+EQ_PRESETS = {
+    "solo_guitar": {
+        "description": "Solo guitar isolation — highpass 800 Hz, boost 2-4 kHz",
+        "highpass_hz": 800,
+        "lowpass_hz": None,
+        "boost_low_hz": 2000,
+        "boost_high_hz": 4000,
+        "boost_db": 6.0,
+    },
+    "rhythm_guitar": {
+        "description": "Rhythm guitar isolation — lowpass 2000 Hz, boost 200-500 Hz",
+        "highpass_hz": None,
+        "lowpass_hz": 2000,
+        "boost_low_hz": 200,
+        "boost_high_hz": 500,
+        "boost_db": 4.0,
+    },
+    "bass": {
+        "description": "Bass guitar isolation — lowpass 800 Hz, boost 60-250 Hz",
+        "highpass_hz": None,
+        "lowpass_hz": 800,
+        "boost_low_hz": 60,
+        "boost_high_hz": 250,
+        "boost_db": 4.0,
+    },
+    "custom": {
+        "description": "Custom EQ — all parameters user-specified",
+    },
+}
+
+
+@mcp.tool()
+def eq_filter(
+    wav_path: str,
+    preset: str = "solo_guitar",
+    output_filename: str | None = None,
+    highpass_hz: float | None = None,
+    lowpass_hz: float | None = None,
+    boost_low_hz: float | None = None,
+    boost_high_hz: float | None = None,
+    boost_db: float | None = None,
+) -> str:
+    """
+    Apply EQ filtering to a WAV audio file before Neural Note transcription.
+
+    Use this when solo and rhythm guitar are combined in one stem.
+    Filter the stem to isolate the target guitar part for better Neural Note accuracy.
+
+    Presets:
+    - "solo_guitar": highpass 800 Hz + boost 2-4 kHz (isolates lead guitar)
+    - "rhythm_guitar": lowpass 2000 Hz + boost 200-500 Hz (isolates rhythm)
+    - "bass": lowpass 800 Hz + boost 60-250 Hz (isolates bass guitar)
+    - "custom": all parameters user-specified
+
+    Args:
+        wav_path: Path to input WAV file (e.g. /data/input/guitar_stem.wav)
+        preset: EQ preset name — "solo_guitar", "rhythm_guitar", "bass", or "custom"
+        output_filename: Output filename (default: input_name + "_eq_preset.wav")
+        highpass_hz: Custom highpass cutoff (overrides preset)
+        lowpass_hz: Custom lowpass cutoff (overrides preset)
+        boost_low_hz: Low edge of boost band (overrides preset)
+        boost_high_hz: High edge of boost band (overrides preset)
+        boost_db: Boost amount in dB (overrides preset)
+
+    Returns:
+        JSON with output path, applied settings, and duration.
+    """
+    _check_rate_limit()
+    import soundfile as sf
+
+    logger.info("eq_filter: %s preset=%s", wav_path, preset)
+    path = validate_path(wav_path)
+
+    if preset not in EQ_PRESETS:
+        return json.dumps({"error": f"Unknown preset: {preset}. Available: {list(EQ_PRESETS.keys())}"})
+
+    y, sr = librosa.load(str(path), sr=None, mono=False)
+    is_stereo = y.ndim == 2
+    if is_stereo:
+        y_mono = librosa.to_mono(y)
+    else:
+        y_mono = y
+
+    params = dict(EQ_PRESETS[preset])
+    params.pop("description", None)
+    if highpass_hz is not None:
+        params["highpass_hz"] = highpass_hz
+    if lowpass_hz is not None:
+        params["lowpass_hz"] = lowpass_hz
+    if boost_low_hz is not None:
+        params["boost_low_hz"] = boost_low_hz
+    if boost_high_hz is not None:
+        params["boost_high_hz"] = boost_high_hz
+    if boost_db is not None:
+        params["boost_db"] = boost_db
+
+    from scipy.signal import butter, sosfilt
+
+    result = y_mono.copy()
+
+    hp = params.get("highpass_hz")
+    if hp and hp > 0:
+        sos = butter(4, hp, btype="highpass", fs=sr, output="sos")
+        result = sosfilt(sos, result)
+
+    lp = params.get("lowpass_hz")
+    if lp and lp > 0:
+        sos = butter(4, lp, btype="lowpass", fs=sr, output="sos")
+        result = sosfilt(sos, result)
+
+    bl = params.get("boost_low_hz")
+    bh = params.get("boost_high_hz")
+    bdb = params.get("boost_db", 0)
+    if bl and bh and bdb and bdb > 0:
+        sos = butter(2, [bl, bh], btype="bandpass", fs=sr, output="sos")
+        boosted = sosfilt(sos, y_mono)
+        gain = 10 ** (bdb / 20)
+        result = result + boosted * (gain - 1.0)
+
+    peak = np.max(np.abs(result))
+    if peak > 0:
+        result = result / peak * 0.95
+
+    if not output_filename:
+        stem = path.stem
+        output_filename = f"{stem}_eq_{preset}.wav"
+    safe_name = sanitize_filename(output_filename)
+    out_path = DATA_DIR / "input" / safe_name
+    sf.write(str(out_path), result, sr)
+
+    duration = len(result) / sr
+    logger.info("eq_filter: saved %s (%.1fs)", out_path, duration)
+    return json.dumps({
+        "success": True,
+        "output_path": str(out_path),
+        "filename": safe_name,
+        "duration_sec": round(duration, 1),
+        "sample_rate": sr,
+        "preset": preset,
+        "applied_params": {k: v for k, v in params.items() if v is not None},
+    }, indent=2)
+
+
+# ── Tool: extract_track ─────────────────────────────────────────────
+
+@mcp.tool()
+def extract_track(
+    midi_path: str,
+    track_index: int,
+    output_filename: str | None = None,
+) -> str:
+    """
+    Extract a single track from a multi-track MIDI file.
+
+    Use this when the user provides a multi-track MIDI and wants to process
+    only one track. This creates a new MIDI file containing only the specified track.
+
+    Args:
+        midi_path: Path to the multi-track MIDI file
+        track_index: Index of the track to extract (0-based, use midi_info to see indices)
+        output_filename: Output filename (default: input_name + "_track_N.mid")
+
+    Returns:
+        JSON with output path, track name, and note count.
+    """
+    _check_rate_limit()
+    import mido
+    from .utils import extract_notes
+
+    logger.info("extract_track: %s track=%d", midi_path, track_index)
+    path = validate_path(midi_path)
+    midi = mido.MidiFile(str(path))
+
+    if track_index < 0 or track_index >= len(midi.tracks):
+        return json.dumps({
+            "error": f"Track index {track_index} out of range. File has {len(midi.tracks)} tracks (0-{len(midi.tracks)-1})."
+        })
+
+    track = midi.tracks[track_index]
+    track_name = get_track_name(track) or f"Track {track_index}"
+    notes = extract_notes(track)
+
+    out_midi = mido.MidiFile(ticks_per_beat=midi.ticks_per_beat)
+    if midi.tracks:
+        tempo_track = mido.MidiTrack()
+        for msg in midi.tracks[0]:
+            if msg.is_meta and msg.type in ("set_tempo", "time_signature", "key_signature"):
+                tempo_track.append(msg.copy())
+        if tempo_track:
+            out_midi.tracks.append(tempo_track)
+
+    out_midi.tracks.append(track.copy() if track_index != 0 else track)
+
+    if not output_filename:
+        output_filename = f"{path.stem}_track_{track_index}.mid"
+    safe_name = sanitize_filename(output_filename)
+    out_path = DATA_DIR / "input" / safe_name
+    out_midi.save(str(out_path))
+
+    logger.info("extract_track: saved %s (%d notes)", out_path, len(notes))
+    return json.dumps({
+        "success": True,
+        "output_path": str(out_path),
+        "filename": safe_name,
+        "track_index": track_index,
+        "track_name": track_name,
+        "note_count": len(notes),
+        "ticks_per_beat": midi.ticks_per_beat,
     }, indent=2)
 
 
